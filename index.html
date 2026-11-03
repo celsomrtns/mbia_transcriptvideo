@@ -86,9 +86,33 @@
         font: 0.9rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
       }
 
+      .subtitle-editor { display: grid; gap: 12px; }
+      .subtitle-editor h2 { margin: 8px 0 0; font-size: 1.1rem; }
+      .subtitle-fields {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .subtitle-fields label { display: grid; gap: 6px; color: #cbd5e1; }
+      .subtitle-fields input {
+        width: 100%;
+        min-height: 42px;
+        padding: 8px 10px;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        background: #080d17;
+        color: #e5e7eb;
+        font: inherit;
+      }
+      .subtitle-fields .subtitle-text { grid-column: 1 / -1; }
+      .subtitle-fields textarea { min-height: 72px; font: inherit; }
+      .subtitle-editor .note { font-size: 0.88rem; }
+
       @media (max-width: 560px) {
         body { padding: 22px 12px; }
         .controls { padding: 16px; }
+        .subtitle-fields { grid-template-columns: 1fr; }
+        .subtitle-fields .subtitle-text { grid-column: auto; }
       }
     </style>
   </head>
@@ -116,7 +140,29 @@
           <p id="status" class="status" role="status" aria-live="polite">Pronto para transcrever.</p>
           <progress id="progress" max="100" value="0" hidden></progress>
           <label for="subtitle" id="subtitle-label" hidden>Prévia da legenda SRT</label>
-          <textarea id="subtitle" readonly hidden spellcheck="false"></textarea>
+          <textarea id="subtitle" hidden spellcheck="false" aria-describedby="subtitle-help"></textarea>
+          <section id="subtitle-editor" class="subtitle-editor" aria-label="Adicionar legenda" hidden>
+            <h2>Adicionar legenda</h2>
+            <p id="subtitle-help" class="note">Edite o SRT diretamente ou preencha os tempos no formato HH:MM:SS,mmm e escolha onde inserir a nova legenda.</p>
+            <div class="subtitle-fields">
+              <label>
+                Início
+                <input id="caption-start" type="text" inputmode="numeric" placeholder="00:00:00,000" autocomplete="off">
+              </label>
+              <label>
+                Fim
+                <input id="caption-end" type="text" inputmode="numeric" placeholder="00:00:02,000" autocomplete="off">
+              </label>
+              <label class="subtitle-text">
+                Texto da legenda
+                <textarea id="caption-text" rows="2"></textarea>
+              </label>
+            </div>
+            <div class="actions">
+              <button id="add-caption-before" type="button">Adicionar no início</button>
+              <button id="add-caption-after" type="button">Adicionar no fim</button>
+            </div>
+          </section>
         </div>
       </section>
     </main>
@@ -133,6 +179,10 @@
       const progress = document.querySelector("#progress");
       const subtitleLabel = document.querySelector("#subtitle-label");
       const subtitlePreview = document.querySelector("#subtitle");
+      const subtitleEditor = document.querySelector("#subtitle-editor");
+      const captionStart = document.querySelector("#caption-start");
+      const captionEnd = document.querySelector("#caption-end");
+      const captionText = document.querySelector("#caption-text");
 
       let transcriber;
       let downloadUrl;
@@ -149,6 +199,68 @@
         const wholeSeconds = Math.floor((milliseconds % 60000) / 1000);
         const remainder = milliseconds % 1000;
         return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")},${String(remainder).padStart(3, "0")}`;
+      }
+
+      function updateDownload() {
+        if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+        downloadUrl = URL.createObjectURL(
+          new Blob([subtitlePreview.value], { type: "text/plain;charset=utf-8" }),
+        );
+        downloadLink.href = downloadUrl;
+      }
+
+      function parseTimestamp(value) {
+        const match = /^(\d{2,}):([0-5]\d):([0-5]\d),(\d{3})$/.exec(value.trim());
+        if (!match) return null;
+        return (
+          Number(match[1]) * 3600000 +
+          Number(match[2]) * 60000 +
+          Number(match[3]) * 1000 +
+          Number(match[4])
+        );
+      }
+
+      function renumberSubtitles(srt) {
+        return srt
+          .trim()
+          .split(/\r?\n\s*\r?\n/)
+          .filter((block) => block.trim())
+          .map((block, index) => {
+            const content = block.trim().replace(/^\d+\s*\r?\n/, "");
+            return `${index + 1}\n${content}`;
+          })
+          .join("\n\n") + "\n";
+      }
+
+      function addCaption(position) {
+        const start = parseTimestamp(captionStart.value);
+        const end = parseTimestamp(captionEnd.value);
+        const text = captionText.value.trim();
+        if (start === null || end === null) {
+          setStatus("Informe os tempos no formato HH:MM:SS,mmm.", true);
+          return;
+        }
+        if (end <= start) {
+          setStatus("O tempo final precisa ser posterior ao tempo inicial.", true);
+          return;
+        }
+        if (!text) {
+          setStatus("Informe o texto da legenda.", true);
+          captionText.focus();
+          return;
+        }
+
+        const newCaption = `0\n${captionStart.value.trim()} --> ${captionEnd.value.trim()}\n${text}`;
+        const existing = subtitlePreview.value.trim();
+        subtitlePreview.value = renumberSubtitles(
+          position === "before"
+            ? [newCaption, existing].filter(Boolean).join("\n\n")
+            : [existing, newCaption].filter(Boolean).join("\n\n"),
+        );
+        updateDownload();
+        captionText.value = "";
+        captionText.focus();
+        setStatus(`Legenda adicionada ${position === "before" ? "no início" : "no fim"} da prévia.`);
       }
 
       async function loadModel() {
@@ -230,6 +342,7 @@
         downloadLink.hidden = true;
         subtitleLabel.hidden = true;
         subtitlePreview.hidden = true;
+        subtitleEditor.hidden = true;
         progress.hidden = false;
         progress.value = 0;
         setStatus("Iniciando...");
@@ -252,9 +365,8 @@
           subtitlePreview.value = srt;
           subtitlePreview.hidden = false;
           subtitleLabel.hidden = false;
-          if (downloadUrl) URL.revokeObjectURL(downloadUrl);
-          downloadUrl = URL.createObjectURL(new Blob([srt], { type: "text/plain;charset=utf-8" }));
-          downloadLink.href = downloadUrl;
+          subtitleEditor.hidden = false;
+          updateDownload();
           downloadLink.download = "video.srt";
           downloadLink.hidden = false;
           progress.hidden = true;
@@ -266,6 +378,10 @@
           transcribeButton.disabled = false;
         }
       });
+
+      subtitlePreview.addEventListener("input", updateDownload);
+      document.querySelector("#add-caption-before").addEventListener("click", () => addCaption("before"));
+      document.querySelector("#add-caption-after").addEventListener("click", () => addCaption("after"));
 
       video.addEventListener("error", () => {
         setStatus("Não foi possível carregar video/video.mp4. Verifique se o arquivo existe.", true);
