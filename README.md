@@ -1,6 +1,6 @@
-# Transcrição de vídeo
+# mbia_transcriptvideo — Transcrição de vídeo
 
-Aplicação local para reproduzir `video/video.mp4`, reconhecer a fala em inglês e baixar as legendas em `video.srt`. Foi pensada para gerar legendas em inglês para trailers.
+Aplicação local feita com IA para analisar trailers em vídeo MP4, reconhecer a fala em inglês e baixar as legendas em `video.srt`.
 
 ## Como iniciar
 
