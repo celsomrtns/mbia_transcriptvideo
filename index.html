@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111827">
+    <title>Transcrição de vídeo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #0b1120;
+        color: #e5e7eb;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        padding: 32px 18px;
+        background: radial-gradient(ellipse at top, #172554 0, #0b1120 55%);
+      }
+
+      main { width: min(900px, 100%); margin: 0 auto; }
+      h1 { margin: 0 0 8px; font-size: clamp(1.7rem, 5vw, 2.4rem); }
+      .intro { margin: 0 0 24px; color: #aab5c7; line-height: 1.6; }
+
+      .panel {
+        overflow: hidden;
+        border: 1px solid #293449;
+        border-radius: 16px;
+        background: #111827;
+        box-shadow: 0 18px 55px #0005;
+      }
+
+      video {
+        display: block;
+        width: 100%;
+        max-height: 58vh;
+        background: #05080e;
+      }
+
+      .controls { display: grid; gap: 16px; padding: 22px; }
+      .note { margin: 0; color: #aab5c7; font-size: 0.94rem; line-height: 1.55; }
+      button, a.button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 46px;
+        padding: 10px 18px;
+        border: 0;
+        border-radius: 9px;
+        background: #4f46e5;
+        color: white;
+        font: inherit;
+        font-weight: 650;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      button:hover, a.button:hover { background: #6366f1; }
+      button:disabled { cursor: wait; opacity: 0.65; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; }
+      [hidden] { display: none !important; }
+
+      .status { min-height: 24px; margin: 0; color: #cbd5e1; }
+      .status.error { color: #fca5a5; }
+
+      progress {
+        width: 100%;
+        height: 10px;
+        accent-color: #818cf8;
+      }
+
+      label[for="subtitle"] { font-weight: 650; }
+      textarea {
+        width: 100%;
+        min-height: 220px;
+        resize: vertical;
+        padding: 12px;
+        border: 1px solid #374151;
+        border-radius: 9px;
+        background: #080d17;
+        color: #e5e7eb;
+        font: 0.9rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+
+      @media (max-width: 560px) {
+        body { padding: 22px 12px; }
+        .controls { padding: 16px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Transcrição de vídeo</h1>
+      <p class="intro">Gere legendas em inglês para o vídeo <strong>video/video.mp4</strong>.</p>
+
+      <section class="panel" aria-label="Vídeo e ferramentas de transcrição">
+        <video id="video" controls preload="metadata">
+          <source src="/video" type="video/mp4">
+          Seu navegador não consegue reproduzir este vídeo.
+        </video>
+        <div class="controls">
+          <p class="note">
+            A transcrição roda no seu navegador: o áudio não é enviado para um serviço externo.
+            O FFmpeg local é usado para extrair o áudio do vídeo.
+            Na primeira execução, será necessário baixar o modelo de reconhecimento de fala
+            (aproximadamente 75 MB). Requer conexão com a internet para carregar o modelo.
+          </p>
+          <div class="actions">
+            <button id="transcribe" type="button">Transcrever em inglês</button>
+            <a id="download" class="button" hidden>Baixar legenda .srt</a>
+          </div>
+          <p id="status" class="status" role="status" aria-live="polite">Pronto para transcrever.</p>
+          <progress id="progress" max="100" value="0" hidden></progress>
+          <label for="subtitle" id="subtitle-label" hidden>Prévia da legenda SRT</label>
+          <textarea id="subtitle" readonly hidden spellcheck="false"></textarea>
+        </div>
+      </section>
+    </main>
+
+    <script type="module">
+      const MODEL_ID = "onnx-community/whisper-tiny.en";
+      const SAMPLE_RATE = 16000;
+      const START_PADDING_SECONDS = 2;
+
+      const video = document.querySelector("#video");
+      const transcribeButton = document.querySelector("#transcribe");
+      const downloadLink = document.querySelector("#download");
+      const status = document.querySelector("#status");
+      const progress = document.querySelector("#progress");
+      const subtitleLabel = document.querySelector("#subtitle-label");
+      const subtitlePreview = document.querySelector("#subtitle");
+
+      let transcriber;
+      let downloadUrl;
+
+      function setStatus(message, isError = false) {
+        status.textContent = message;
+        status.classList.toggle("error", isError);
+      }
+
+      function formatTimestamp(seconds) {
+        const milliseconds = Math.max(0, Math.round(seconds * 1000));
+        const hours = Math.floor(milliseconds / 3600000);
+        const minutes = Math.floor((milliseconds % 3600000) / 60000);
+        const wholeSeconds = Math.floor((milliseconds % 60000) / 1000);
+        const remainder = milliseconds % 1000;
+        return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")},${String(remainder).padStart(3, "0")}`;
+      }
+
+      async function loadModel() {
+        if (transcriber) return transcriber;
+
+        setStatus("Carregando o modelo de transcrição. O primeiro carregamento pode demorar...");
+        progress.hidden = false;
+        progress.removeAttribute("value");
+        const { pipeline } = await import(
+          "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2"
+        );
+
+        transcriber = await pipeline(
+          "automatic-speech-recognition",
+          MODEL_ID,
+          {
+            dtype: "q8",
+            progress_callback: (event) => {
+              if (event.status === "progress" && Number.isFinite(event.progress)) {
+                progress.value = event.progress;
+                setStatus(`Baixando modelo: ${Math.round(event.progress)}%`);
+              }
+            },
+          },
+        );
+        progress.value = 100;
+        return transcriber;
+      }
+
+      async function extractAudio() {
+        setStatus("Extraindo o áudio do vídeo...");
+        const response = await fetch("/audio");
+        if (!response.ok) {
+          const reason = await response.text();
+          throw new Error(reason || `Não foi possível extrair o áudio (HTTP ${response.status}).`);
+        }
+
+        const file = await response.arrayBuffer();
+        if (!file.byteLength || file.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) {
+          throw new Error("O áudio extraído está vazio ou em formato inválido.");
+        }
+
+        const samples = new Float32Array(file);
+        if (!samples.some((sample) => sample !== 0)) {
+          throw new Error("A faixa de áudio está vazia ou contém apenas silêncio.");
+        }
+        return { samples, duration: samples.length / SAMPLE_RATE };
+      }
+
+      function createSrt(result, duration, timestampOffset = 0) {
+        if (!Array.isArray(result.chunks) || result.chunks.length === 0) {
+          throw new Error("O modelo não retornou segmentos com marcações de tempo.");
+        }
+
+        let previousEnd = 0;
+        const entries = result.chunks.flatMap((chunk) => {
+          const text = chunk.text?.trim().replace(/\s+/g, " ");
+          if (!text || !Array.isArray(chunk.timestamp)) return [];
+
+          let [start, end] = chunk.timestamp;
+          start = Number.isFinite(start)
+            ? Math.max(start - timestampOffset, previousEnd, 0)
+            : previousEnd;
+          end = Number.isFinite(end) ? Math.min(end - timestampOffset, duration) : duration;
+          if (end <= start) return [];
+          previousEnd = end;
+
+          return [`${formatTimestamp(start)} --> ${formatTimestamp(end)}\n${text}`];
+        });
+
+        if (entries.length === 0) {
+          throw new Error("Não foi possível gerar segmentos de legenda com tempos válidos.");
+        }
+        return entries.map((entry, index) => `${index + 1}\n${entry}`).join("\n\n") + "\n";
+      }
+
+      transcribeButton.addEventListener("click", async () => {
+        transcribeButton.disabled = true;
+        downloadLink.hidden = true;
+        subtitleLabel.hidden = true;
+        subtitlePreview.hidden = true;
+        progress.hidden = false;
+        progress.value = 0;
+        setStatus("Iniciando...");
+
+        try {
+          const { samples, duration } = await extractAudio();
+          const paddingSamples = Math.round(START_PADDING_SECONDS * SAMPLE_RATE);
+          const paddedSamples = new Float32Array(samples.length + paddingSamples);
+          paddedSamples.set(samples, paddingSamples);
+          const model = await loadModel();
+          setStatus("Transcrevendo o áudio em inglês. Isso pode levar alguns minutos...");
+          progress.removeAttribute("value");
+          const result = await model(paddedSamples, {
+            chunk_length_s: 30,
+            stride_length_s: 5,
+            return_timestamps: true,
+          });
+          const srt = createSrt(result, duration, START_PADDING_SECONDS);
+
+          subtitlePreview.value = srt;
+          subtitlePreview.hidden = false;
+          subtitleLabel.hidden = false;
+          if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+          downloadUrl = URL.createObjectURL(new Blob([srt], { type: "text/plain;charset=utf-8" }));
+          downloadLink.href = downloadUrl;
+          downloadLink.download = "video.srt";
+          downloadLink.hidden = false;
+          progress.hidden = true;
+          setStatus(`Transcrição concluída: ${result.chunks.length} segmentos de legenda.`);
+        } catch (error) {
+          progress.hidden = true;
+          setStatus(`Falha na transcrição: ${error.message}`, true);
+        } finally {
+          transcribeButton.disabled = false;
+        }
+      });
+
+      video.addEventListener("error", () => {
+        setStatus("Não foi possível carregar video/video.mp4. Verifique se o arquivo existe.", true);
+      });
+    </script>
+  </body>
+</html>

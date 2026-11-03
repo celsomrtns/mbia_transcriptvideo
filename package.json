@@ -1,0 +1,9 @@
+{
+  "name": "transcricao-video-local",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Transcreve localmente o áudio do vídeo para legendas SRT.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
