@@ -73,19 +73,6 @@
         accent-color: #818cf8;
       }
 
-      label[for="subtitle"] { font-weight: 650; }
-      textarea {
-        width: 100%;
-        min-height: 220px;
-        resize: vertical;
-        padding: 12px;
-        border: 1px solid #374151;
-        border-radius: 9px;
-        background: #080d17;
-        color: #e5e7eb;
-        font: 0.9rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
-      }
-
       .subtitle-editor { display: grid; gap: 12px; }
       .subtitle-editor h2 { margin: 8px 0 0; font-size: 1.1rem; }
       .subtitle-fields {
@@ -105,8 +92,54 @@
         font: inherit;
       }
       .subtitle-fields .subtitle-text { grid-column: 1 / -1; }
-      .subtitle-fields textarea { min-height: 72px; font: inherit; }
+      .subtitle-fields textarea {
+        width: 100%;
+        min-height: 72px;
+        resize: vertical;
+        padding: 8px 10px;
+        border: 1px solid #374151;
+        border-radius: 8px;
+        background: #080d17;
+        color: #e5e7eb;
+        font: inherit;
+      }
       .subtitle-editor .note { font-size: 0.88rem; }
+      .subtitle-list { display: grid; gap: 8px; }
+      .subtitle-card {
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+        border: 1px solid #293449;
+        border-radius: 12px;
+        background: #0b1120;
+      }
+      .subtitle-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .subtitle-card-header h3 { margin: 0; font-size: 1rem; }
+      button.remove-caption {
+        min-height: 38px;
+        padding: 6px 12px;
+        background: #7f1d1d;
+      }
+      button.remove-caption:hover { background: #991b1b; }
+      button.add-caption {
+        justify-self: center;
+        width: 38px;
+        min-height: 38px;
+        padding: 0;
+        border: 2px solid #818cf8;
+        border-radius: 50%;
+        background: transparent;
+        color: #c7d2fe;
+        font-size: 1.35rem;
+        line-height: 1;
+      }
+      button.add-caption:hover { background: #312e81; }
+      a.button[aria-disabled="true"] { cursor: not-allowed; opacity: 0.55; }
 
       @media (max-width: 560px) {
         body { padding: 22px 12px; }
@@ -139,29 +172,10 @@
           </div>
           <p id="status" class="status" role="status" aria-live="polite">Pronto para transcrever.</p>
           <progress id="progress" max="100" value="0" hidden></progress>
-          <label for="subtitle" id="subtitle-label" hidden>Prévia da legenda SRT</label>
-          <textarea id="subtitle" hidden spellcheck="false" aria-describedby="subtitle-help"></textarea>
-          <section id="subtitle-editor" class="subtitle-editor" aria-label="Adicionar legenda" hidden>
-            <h2>Adicionar legenda</h2>
-            <p id="subtitle-help" class="note">Edite o SRT diretamente ou preencha os tempos no formato HH:MM:SS,mmm e escolha onde inserir a nova legenda.</p>
-            <div class="subtitle-fields">
-              <label>
-                Início
-                <input id="caption-start" type="text" inputmode="numeric" placeholder="00:00:00,000" autocomplete="off">
-              </label>
-              <label>
-                Fim
-                <input id="caption-end" type="text" inputmode="numeric" placeholder="00:00:02,000" autocomplete="off">
-              </label>
-              <label class="subtitle-text">
-                Texto da legenda
-                <textarea id="caption-text" rows="2"></textarea>
-              </label>
-            </div>
-            <div class="actions">
-              <button id="add-caption-before" type="button">Adicionar no início</button>
-              <button id="add-caption-after" type="button">Adicionar no fim</button>
-            </div>
+          <section id="subtitle-editor" class="subtitle-editor" aria-label="Editar legendas" hidden>
+            <h2>Prévia da legenda SRT</h2>
+            <p class="note">Edite os tempos no formato HH:MM:SS,mmm e o texto de cada legenda. Use “+” para inserir uma legenda naquela posição.</p>
+            <div id="subtitle-list" class="subtitle-list"></div>
           </section>
         </div>
       </section>
@@ -177,15 +191,12 @@
       const downloadLink = document.querySelector("#download");
       const status = document.querySelector("#status");
       const progress = document.querySelector("#progress");
-      const subtitleLabel = document.querySelector("#subtitle-label");
-      const subtitlePreview = document.querySelector("#subtitle");
       const subtitleEditor = document.querySelector("#subtitle-editor");
-      const captionStart = document.querySelector("#caption-start");
-      const captionEnd = document.querySelector("#caption-end");
-      const captionText = document.querySelector("#caption-text");
+      const subtitleList = document.querySelector("#subtitle-list");
 
       let transcriber;
       let downloadUrl;
+      let captions = [];
 
       function setStatus(message, isError = false) {
         status.textContent = message;
@@ -201,14 +212,6 @@
         return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(wholeSeconds).padStart(2, "0")},${String(remainder).padStart(3, "0")}`;
       }
 
-      function updateDownload() {
-        if (downloadUrl) URL.revokeObjectURL(downloadUrl);
-        downloadUrl = URL.createObjectURL(
-          new Blob([subtitlePreview.value], { type: "text/plain;charset=utf-8" }),
-        );
-        downloadLink.href = downloadUrl;
-      }
-
       function parseTimestamp(value) {
         const match = /^(\d{2,}):([0-5]\d):([0-5]\d),(\d{3})$/.exec(value.trim());
         if (!match) return null;
@@ -220,48 +223,159 @@
         );
       }
 
-      function renumberSubtitles(srt) {
+      function parseSrt(srt) {
         return srt
           .trim()
           .split(/\r?\n\s*\r?\n/)
           .filter((block) => block.trim())
-          .map((block, index) => {
-            const content = block.trim().replace(/^\d+\s*\r?\n/, "");
-            return `${index + 1}\n${content}`;
-          })
-          .join("\n\n") + "\n";
+          .map((block) => {
+            const lines = block.trim().split(/\r?\n/);
+            const [start, end] = lines[1].split(" --> ");
+            return { start, end, text: lines.slice(2).join("\n") };
+          });
       }
 
-      function addCaption(position) {
-        const start = parseTimestamp(captionStart.value);
-        const end = parseTimestamp(captionEnd.value);
-        const text = captionText.value.trim();
-        if (start === null || end === null) {
-          setStatus("Informe os tempos no formato HH:MM:SS,mmm.", true);
-          return;
-        }
-        if (end <= start) {
-          setStatus("O tempo final precisa ser posterior ao tempo inicial.", true);
-          return;
-        }
-        if (!text) {
-          setStatus("Informe o texto da legenda.", true);
-          captionText.focus();
-          return;
-        }
-
-        const newCaption = `0\n${captionStart.value.trim()} --> ${captionEnd.value.trim()}\n${text}`;
-        const existing = subtitlePreview.value.trim();
-        subtitlePreview.value = renumberSubtitles(
-          position === "before"
-            ? [newCaption, existing].filter(Boolean).join("\n\n")
-            : [existing, newCaption].filter(Boolean).join("\n\n"),
+      function serializeSubtitles() {
+        const entries = captions.map((caption) => {
+          const start = parseTimestamp(caption.start);
+          const end = parseTimestamp(caption.end);
+          const text = caption.text.trim();
+          if (start === null || end === null || end <= start || !text) return null;
+          return `${caption.start.trim()} --> ${caption.end.trim()}\n${text}`;
+        });
+        if (entries.some((entry) => entry === null)) return null;
+        return (
+          entries.map((entry, index) => `${index + 1}\n${entry}`).join("\n\n") +
+          (entries.length ? "\n" : "")
         );
-        updateDownload();
-        captionText.value = "";
-        captionText.focus();
-        setStatus(`Legenda adicionada ${position === "before" ? "no início" : "no fim"} da prévia.`);
       }
+
+      function updateDownload() {
+        if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+        const srt = serializeSubtitles();
+        if (srt === null) {
+          downloadUrl = null;
+          downloadLink.removeAttribute("href");
+          downloadLink.setAttribute("aria-disabled", "true");
+          downloadLink.tabIndex = -1;
+          return;
+        }
+
+        downloadUrl = URL.createObjectURL(new Blob([srt], { type: "text/plain;charset=utf-8" }));
+        downloadLink.href = downloadUrl;
+        downloadLink.removeAttribute("aria-disabled");
+        downloadLink.removeAttribute("tabindex");
+      }
+
+      function createField(labelText, field, value, index, multiline = false) {
+        const label = document.createElement("label");
+        label.textContent = labelText;
+        const input = document.createElement(multiline ? "textarea" : "input");
+        if (!multiline) {
+          input.type = "text";
+          input.inputMode = "numeric";
+          input.autocomplete = "off";
+          input.placeholder = "00:00:00,000";
+        } else {
+          input.rows = 2;
+        }
+        input.value = value;
+        input.dataset.captionField = field;
+        input.dataset.captionIndex = String(index);
+        label.append(input);
+        return label;
+      }
+
+      function renderSubtitles(focusIndex = null) {
+        subtitleList.replaceChildren();
+        captions.forEach((caption, index) => {
+          const addButton = document.createElement("button");
+          addButton.type = "button";
+          addButton.className = "add-caption";
+          addButton.textContent = "+";
+          addButton.setAttribute(
+            "aria-label",
+            `Adicionar legenda ${index === 0 ? "antes da legenda 1" : `entre as legendas ${index} e ${index + 1}`}`,
+          );
+          addButton.dataset.insertAt = String(index);
+          subtitleList.append(addButton);
+
+          const card = document.createElement("article");
+          card.className = "subtitle-card";
+          const header = document.createElement("div");
+          header.className = "subtitle-card-header";
+          const heading = document.createElement("h3");
+          heading.textContent = `Legenda ${index + 1}`;
+          const removeButton = document.createElement("button");
+          removeButton.type = "button";
+          removeButton.className = "remove-caption";
+          removeButton.textContent = "Remover";
+          removeButton.setAttribute("aria-label", `Remover legenda ${index + 1}`);
+          removeButton.dataset.removeAt = String(index);
+          header.append(heading, removeButton);
+
+          const fields = document.createElement("div");
+          fields.className = "subtitle-fields";
+          fields.append(
+            createField("Início", "start", caption.start, index),
+            createField("Fim", "end", caption.end, index),
+            createField("Texto", "text", caption.text, index, true),
+          );
+          card.append(header, fields);
+          subtitleList.append(card);
+        });
+
+        const addButton = document.createElement("button");
+        addButton.type = "button";
+        addButton.className = "add-caption";
+        addButton.textContent = "+";
+        addButton.setAttribute("aria-label", "Adicionar legenda no fim");
+        addButton.dataset.insertAt = String(captions.length);
+        subtitleList.append(addButton);
+
+        if (focusIndex !== null) {
+          subtitleList
+            .querySelector(`[data-caption-index="${focusIndex}"][data-caption-field="start"]`)
+            ?.focus();
+        }
+      }
+
+      function insertCaption(index) {
+        captions.splice(index, 0, { start: "", end: "", text: "" });
+        renderSubtitles(index);
+        updateDownload();
+        setStatus("Nova legenda inserida. Preencha os tempos e o texto para habilitar o download.");
+      }
+
+      subtitleList.addEventListener("input", (event) => {
+        const field = event.target.closest("[data-caption-field]");
+        if (!field) return;
+        const index = Number(field.dataset.captionIndex);
+        captions[index][field.dataset.captionField] = field.value;
+        updateDownload();
+      });
+
+      subtitleList.addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+
+        if (button.dataset.insertAt !== undefined) {
+          insertCaption(Number(button.dataset.insertAt));
+          return;
+        }
+
+        if (button.dataset.removeAt !== undefined) {
+          const index = Number(button.dataset.removeAt);
+          captions.splice(index, 1);
+          renderSubtitles();
+          updateDownload();
+          setStatus(`Legenda removida. A numeração foi atualizada (${captions.length} restantes).`);
+        }
+      });
+
+      downloadLink.addEventListener("click", (event) => {
+        if (downloadLink.getAttribute("aria-disabled") === "true") event.preventDefault();
+      });
 
       async function loadModel() {
         if (transcriber) return transcriber;
@@ -340,8 +454,6 @@
       transcribeButton.addEventListener("click", async () => {
         transcribeButton.disabled = true;
         downloadLink.hidden = true;
-        subtitleLabel.hidden = true;
-        subtitlePreview.hidden = true;
         subtitleEditor.hidden = true;
         progress.hidden = false;
         progress.value = 0;
@@ -362,15 +474,14 @@
           });
           const srt = createSrt(result, duration, START_PADDING_SECONDS);
 
-          subtitlePreview.value = srt;
-          subtitlePreview.hidden = false;
-          subtitleLabel.hidden = false;
+          captions = parseSrt(srt);
+          renderSubtitles();
           subtitleEditor.hidden = false;
           updateDownload();
           downloadLink.download = "video.srt";
           downloadLink.hidden = false;
           progress.hidden = true;
-          setStatus(`Transcrição concluída: ${result.chunks.length} segmentos de legenda.`);
+          setStatus(`Transcrição concluída: ${captions.length} segmentos de legenda.`);
         } catch (error) {
           progress.hidden = true;
           setStatus(`Falha na transcrição: ${error.message}`, true);
@@ -378,10 +489,6 @@
           transcribeButton.disabled = false;
         }
       });
-
-      subtitlePreview.addEventListener("input", updateDownload);
-      document.querySelector("#add-caption-before").addEventListener("click", () => addCaption("before"));
-      document.querySelector("#add-caption-after").addEventListener("click", () => addCaption("after"));
 
       video.addEventListener("error", () => {
         setStatus("Não foi possível carregar video/video.mp4. Verifique se o arquivo existe.", true);
